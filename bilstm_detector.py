@@ -9,6 +9,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from typing import List, Tuple, Dict
 import time
 from synthetic_data_generator import StructuralBreakGenerator
+from collections import defaultdict
 
 def calculate_localization_errors(true_breaks: List[int], detected_breaks: List[int], tolerance: int) -> List[int]:
     """
@@ -142,7 +143,7 @@ def evaluate_bilstm_by_break_count(dataset: pd.DataFrame, bilstm_results: List[L
         print("Dataset must contain 'n_breaks' and 'break_points' columns for count evaluation.")
         return {}
 
-    break_count_results = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0})
+    break_count_results = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0, 'loc_errors': []})
 
     # Determine series length from dataset columns (assuming consistent length)
     series_cols = [col for col in dataset.columns if col.startswith('t_')]
@@ -176,6 +177,7 @@ def evaluate_bilstm_by_break_count(dataset: pd.DataFrame, bilstm_results: List[L
             # Breaks in both true and detected - count matches
             matched_true_indices = set()
             matched_detected_indices = set()
+            current_localization_errors = []
 
             for k, det_bp in enumerate(detected_bp):
                 for l, true_bp_val in enumerate(true_bp):
@@ -183,6 +185,7 @@ def evaluate_bilstm_by_break_count(dataset: pd.DataFrame, bilstm_results: List[L
                         if l not in matched_true_indices:
                             matched_true_indices.add(l)
                             matched_detected_indices.add(k)
+                            current_localization_errors.append(abs(det_bp - true_bp_val))
                             break
 
             tp = len(matched_detected_indices)
@@ -192,6 +195,8 @@ def evaluate_bilstm_by_break_count(dataset: pd.DataFrame, bilstm_results: List[L
             break_count_results[n_true_breaks]['tp'] += tp
             break_count_results[n_true_breaks]['fp'] += fp
             break_count_results[n_true_breaks]['fn'] += fn
+            # Accumulate localization errors for this break-count bucket
+            break_count_results[n_true_breaks]['loc_errors'].extend(current_localization_errors)
 
     results = {}
     for n_breaks, stats in sorted(break_count_results.items()):
@@ -203,6 +208,8 @@ def evaluate_bilstm_by_break_count(dataset: pd.DataFrame, bilstm_results: List[L
         recall = total_tp_count / (total_tp_count + total_fn_count) if (total_tp_count + total_fn_count) > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
+        avg_localization_error = float(np.mean(stats['loc_errors'])) if stats['loc_errors'] else 0.0
+
         results[n_breaks] = {
             'precision': precision,
             'recall': recall,
@@ -210,7 +217,9 @@ def evaluate_bilstm_by_break_count(dataset: pd.DataFrame, bilstm_results: List[L
             'count': int(stats['count']),
             'true_positives': int(total_tp_count),
             'false_positives': int(total_fp_count),
-            'false_negatives': int(total_fn_count)
+            'false_negatives': int(total_fn_count),
+            'avg_localization_error': avg_localization_error,
+            'localization_errors': stats['loc_errors']
         }
 
     return results

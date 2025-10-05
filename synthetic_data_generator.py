@@ -600,7 +600,7 @@ if __name__ == "__main__":
     # Generate small example dataset for demonstration
     print("Generating example dataset...")
     # Added min_break_distance to the example generation
-    small_dataset = generator.generate_dataset(n_series=1000, series_length=500, max_breaks=3, min_break_distance=20)
+    small_dataset = generator.generate_dataset(n_series=1000, series_length=500, max_breaks=3, min_break_distance=50)
 
     # Show examples
     generator.plot_examples(small_dataset)

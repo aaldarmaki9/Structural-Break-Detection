@@ -9,18 +9,16 @@ warnings.filterwarnings('ignore')
 
 import ruptures as rpt
 
-
 @dataclass
 class StockDataConfig1:
-    """Configuration for stock data generation"""
+    """Configuration for stock-based structural break data"""
     n_series: int = 100
-    series_length: int = 500
+    series_length: int = 1000
     max_breaks: int = 3
-    min_segment_length: int = 50
-    start_date: str = "2011-01-01"
+    min_segment_length: int = 100
+    start_date: str = "2000-01-01"
     end_date: str = "2017-12-31"
     seed: int = 42
-
 
 # ============================================================
 # SEGMENT SCREENING METHODS
