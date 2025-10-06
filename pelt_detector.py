@@ -143,3 +143,64 @@ def run_pelt_benchmark(model: str = "l2", min_size: int = 10, penalty_500: float
            dataset_1000, detected_breaks_1000, results_1000
 
 
+def run_pelt_benchmark_real(penalty: float = 10.0, model: str = "l2", min_size: int = 10) -> Tuple:
+    """Run PELT on the validated real stock dataset and report metrics.
+
+    Uses the same 1% tolerance evaluation. Returns (dataset, detected_breaks, results).
+    """
+    import time
+
+    dataset = pd.read_pickle('validated_stock_breaks.pkl')
+    series_cols = [c for c in dataset.columns if c.startswith('t_')]
+    series_len = len(series_cols)
+    if series_len == 0:
+        print("Dataset appears empty or without t_ columns.")
+        return dataset, [], {}
+
+    print("=== PELT on Validated Real Stock Dataset ===")
+    print(f"Total series: {len(dataset)}  |  Length: {series_len}")
+
+    time_series_data = dataset[series_cols].values
+    true_breaks = dataset['break_points'].tolist()
+
+    detector = PELTDetector(model=model, min_size=min_size, penalty=penalty)
+
+    start_time = time.time()
+    detected_breaks = []
+    detection_times = []
+    for i, series in enumerate(time_series_data):
+        if (i + 1) % 25 == 0:
+            print(f"Processed {i + 1:,} series...")
+        t0 = time.time()
+        br = detector.detect_breaks(series)
+        detection_times.append(time.time() - t0)
+        detected_breaks.append(br)
+
+    print(f"Detection completed for {len(dataset)} series in {time.time() - start_time:.2f} seconds")
+    if detection_times:
+        print(f"Average time per series: {np.mean(detection_times)*1000:.2f} ms")
+    print()
+
+    results = evaluate_detection_performance(true_breaks, detected_breaks, series_len, tolerance_percentage=1.0)
+
+    print("=== PELT Performance Results (Real, 1% Tolerance) ===")
+    print(f"Tolerance used: {results['tolerance_used']}")
+    print(f"Overall Precision: {results['precision']:.3f}")
+    print(f"Overall Recall: {results['recall']:.3f}")
+    print(f"Overall F1-Score: {results['f1_score']:.3f}\n")
+    print(f"Average Precision: {results['avg_precision']:.3f}")
+    print(f"Average Recall: {results['avg_recall']:.3f}")
+    print(f"Average F1-Score: {results['avg_f1']:.3f}\n")
+    print(f"Average Localization Error: {results['avg_localization_error']:.1f} time points\n")
+    print("Confusion Matrix:")
+    print(f"True Positives: {results['true_positives']}")
+    print(f"False Positives: {results['false_positives']}")
+    print(f"False Negatives: {results['false_negatives']}")
+
+    # Optional: plot examples
+    if detected_breaks:
+        plot_detection_examples(dataset.iloc[:len(detected_breaks)], detected_breaks, n_examples=min(6, len(detected_breaks)))
+
+    return dataset, detected_breaks, results
+
+
