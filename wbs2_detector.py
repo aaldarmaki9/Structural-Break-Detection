@@ -331,7 +331,7 @@ def plot_sdll_path(series, universal: bool = True, lambda_param: float = 0.9, cu
     wbs.sdll.path <- function(x, sigma = stats::mad(diff(x)/sqrt(2)), universal = TRUE, M = NULL,
                               th.const = NULL, th.const.min.mult = 0.3, lambda = 0.9, cusums = "systematic") {
       n <- length(x)
-      if (n <= 1) return(list(z=numeric(0), dif=numeric(0), k=0, th=NA_real_, th.min=NA_real_))
+      if (n <= 1) return(list(z=numeric(0), dif=numeric(0), k=0, th=NA_real_, th.min=NA_real_, cpt.ord=numeric(0), cpt.sel=integer(0)))
       if (sigma == 0) stop("Noise level estimated at zero; therefore no change-points to estimate.")
       if (universal) {
         u <- universal.M.th.v3(n, lambda)
@@ -343,14 +343,15 @@ def plot_sdll_path(series, universal: bool = True, lambda_param: float = 0.9, cu
       th.min <- th.const.min * sqrt(2 * log(n)) * sigma
       if (cusums == "random") cusum.sampling <- random.cusums else if (cusums == "systematic") cusum.sampling <- systematic.cusums
       rc <- t(wbs.K.int(x, M, cusum.sampling))
-      if (is.null(dim(rc)) || ncol(rc) == 0) return(list(z=numeric(0), dif=numeric(0), k=0, th=th, th.min=th.min))
-      if (max(abs(rc[,4])) < th.min) return(list(z=numeric(0), dif=numeric(0), k=0, th=th, th.min=th.min))
+      if (is.null(dim(rc)) || ncol(rc) == 0) return(list(z=numeric(0), dif=numeric(0), k=0, th=th, th.min=th.min, cpt.ord=numeric(0), cpt.sel=integer(0)))
+      if (max(abs(rc[,4])) < th.min) return(list(z=numeric(0), dif=numeric(0), k=0, th=th, th.min=th.min, cpt.ord=numeric(0), cpt.sel=integer(0)))
       indices <- which(abs(rc[,4]) > th.min)
       rc.sel <- rc[indices,,drop=FALSE]
       ord <- order(abs(rc.sel[,4]), decreasing=TRUE)
       z <- abs(rc.sel[ord,4])
       z.l <- length(z)
-      if (z.l == 0) return(list(z=z, dif=numeric(0), k=0, th=th, th.min=th.min))
+      cpt.ord <- rc.sel[ord,3]
+      if (z.l == 0) return(list(z=z, dif=numeric(0), k=0, th=th, th.min=th.min, cpt.ord=cpt.ord, cpt.sel=integer(0)))
       dif <- -diff(log(z))
       if (length(dif) == 0) {
         k <- ifelse(z[1] > th, 1, 0)
@@ -360,7 +361,12 @@ def plot_sdll_path(series, universal: bool = True, lambda_param: float = 0.9, cu
         while ((j < z.l) & (z[dif.ord[j]+1] > th)) j <- j + 1
         if (j < z.l) k <- dif.ord[j] else k <- z.l
       }
-      list(z=z, dif=dif, k=as.integer(k), th=th, th.min=th.min)
+      if (k > 0) {
+        cpt.sel <- sort(cpt.ord[1:k])
+      } else {
+        cpt.sel <- integer(0)
+      }
+      list(z=z, dif=dif, k=as.integer(k), th=th, th.min=th.min, cpt.ord=cpt.ord, cpt.sel=cpt.sel)
     }
     ''')
 
@@ -376,9 +382,16 @@ def plot_sdll_path(series, universal: bool = True, lambda_param: float = 0.9, cu
     k = int(np.array(path.rx2('k'))[0]) if len(np.array(path.rx2('k'))) > 0 else 0
     th = float(np.array(path.rx2('th'))[0]) if len(np.array(path.rx2('th'))) > 0 else np.nan
     th_min = float(np.array(path.rx2('th.min'))[0]) if len(np.array(path.rx2('th.min'))) > 0 else np.nan
+    cpt_ord = np.array(path.rx2('cpt.ord'), dtype=int) if 'cpt.ord' in path.names else np.array([], dtype=int)
+    cpt_sel = np.array(path.rx2('cpt.sel'), dtype=int) if 'cpt.sel' in path.names else np.array([], dtype=int)
+    if cpt_ord.size > 0:
+        cpt_ord = cpt_ord - 1
+    if cpt_sel.size > 0:
+        cpt_sel = cpt_sel - 1
 
     # Plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    ax1, ax2, ax3 = axes[0], axes[1], axes[2]
 
     # Left: z path with thresholds
     if z.size > 0:
@@ -410,6 +423,16 @@ def plot_sdll_path(series, universal: bool = True, lambda_param: float = 0.9, cu
     else:
         ax2.set_title('Single candidate only; dif is empty')
         ax2.axis('off')
+
+    # Rightmost: series with selected breakpoints
+    ax3.plot(np.asarray(series, dtype=float), color='black', lw=1.0)
+    if cpt_sel.size > 0:
+        for bp in cpt_sel:
+            ax3.axvline(bp, color='red', ls='--', lw=1.0)
+    ax3.set_title(f'Selected breakpoints (k*={k}) on series')
+    ax3.set_xlabel('t')
+    ax3.set_ylabel('value')
+    ax3.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
