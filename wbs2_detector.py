@@ -306,6 +306,114 @@ grid.intervals <- function(n, M) {
 }
 ''')
 
+"""
+SDLL path plotting utilities
+"""
+
+def plot_sdll_path(series, universal: bool = True, lambda_param: float = 0.9, cusums: str = "systematic"):
+    """Plot the SDLL selection path for a single time series.
+
+    This visualizes:
+      - z: sorted absolute CUSUM magnitudes considered by WBS2
+      - dif: SDLL criterion (-diff(log(z))) used to pick number of changes
+      - horizontal lines at threshold (th) and th.min
+      - vertical line at selected k*
+
+    Args:
+        series: 1D array-like of numeric time series values.
+        universal: Whether to use universal (n, lambda)-based thresholding.
+        lambda_param: Lambda parameter for universal thresholding (0.9 or 0.95 typical).
+        cusums: "systematic" or "random" sampling strategy.
+    """
+
+    # Define an R helper that exposes the SDLL internals for plotting
+    ro.r('''
+    wbs.sdll.path <- function(x, sigma = stats::mad(diff(x)/sqrt(2)), universal = TRUE, M = NULL,
+                              th.const = NULL, th.const.min.mult = 0.3, lambda = 0.9, cusums = "systematic") {
+      n <- length(x)
+      if (n <= 1) return(list(z=numeric(0), dif=numeric(0), k=0, th=NA_real_, th.min=NA_real_))
+      if (sigma == 0) stop("Noise level estimated at zero; therefore no change-points to estimate.")
+      if (universal) {
+        u <- universal.M.th.v3(n, lambda)
+        th.const <- u$th.const
+        M <- u$M
+      } else if (is.null(M) || is.null(th.const)) stop("If universal is FALSE, then M and th.const must be specified.")
+      th.const.min <- th.const * th.const.min.mult
+      th <- th.const * sqrt(2 * log(n)) * sigma
+      th.min <- th.const.min * sqrt(2 * log(n)) * sigma
+      if (cusums == "random") cusum.sampling <- random.cusums else if (cusums == "systematic") cusum.sampling <- systematic.cusums
+      rc <- t(wbs.K.int(x, M, cusum.sampling))
+      if (is.null(dim(rc)) || ncol(rc) == 0) return(list(z=numeric(0), dif=numeric(0), k=0, th=th, th.min=th.min))
+      if (max(abs(rc[,4])) < th.min) return(list(z=numeric(0), dif=numeric(0), k=0, th=th, th.min=th.min))
+      indices <- which(abs(rc[,4]) > th.min)
+      rc.sel <- rc[indices,,drop=FALSE]
+      ord <- order(abs(rc.sel[,4]), decreasing=TRUE)
+      z <- abs(rc.sel[ord,4])
+      z.l <- length(z)
+      if (z.l == 0) return(list(z=z, dif=numeric(0), k=0, th=th, th.min=th.min))
+      dif <- -diff(log(z))
+      if (length(dif) == 0) {
+        k <- ifelse(z[1] > th, 1, 0)
+      } else {
+        dif.ord <- order(dif, decreasing=TRUE)
+        j <- 1
+        while ((j < z.l) & (z[dif.ord[j]+1] > th)) j <- j + 1
+        if (j < z.l) k <- dif.ord[j] else k <- z.l
+      }
+      list(z=z, dif=dif, k=as.integer(k), th=th, th.min=th.min)
+    }
+    ''')
+
+    # Call the R helper to obtain the SDLL path objects
+    r_series = ro.FloatVector(np.asarray(series, dtype=float))
+    r_kwargs = {'universal': universal, 'cusums': cusums}
+    r_kwargs['lambda'] = lambda_param  # 'lambda' is reserved in Python; pass via dict
+    path = ro.r['wbs.sdll.path'](r_series, **r_kwargs)
+
+    # Extract results
+    z = np.array(path.rx2('z'), dtype=float)
+    dif = np.array(path.rx2('dif'), dtype=float)
+    k = int(np.array(path.rx2('k'))[0]) if len(np.array(path.rx2('k'))) > 0 else 0
+    th = float(np.array(path.rx2('th'))[0]) if len(np.array(path.rx2('th'))) > 0 else np.nan
+    th_min = float(np.array(path.rx2('th.min'))[0]) if len(np.array(path.rx2('th.min'))) > 0 else np.nan
+
+    # Plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: z path with thresholds
+    if z.size > 0:
+        ax1.plot(np.arange(1, len(z) + 1), z, marker='o', lw=1.2, color='tab:blue')
+        ax1.axhline(th, color='orange', ls='--', lw=1.0, label='th')
+        ax1.axhline(th_min, color='gray', ls=':', lw=1.0, label='th.min')
+        if k > 0:
+            ax1.axvline(k, color='red', ls='--', lw=1.0, label='k*')
+        ax1.set_title('SDLL z path (sorted |CUSUM|)')
+        ax1.set_xlabel('Order index')
+        ax1.set_ylabel('|CUSUM|')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+    else:
+        ax1.set_title('No candidates above th.min')
+        ax1.axis('off')
+
+    # Right: dif path
+    if dif.size > 0:
+        ax2.plot(np.arange(1, len(dif) + 1), dif, marker='o', lw=1.2, color='tab:green')
+        if k > 0 and k <= len(dif):
+            ax2.axvline(k, color='red', ls='--', lw=1.0, label='k*')
+        ax2.axhline(0.0, color='black', lw=0.8)
+        ax2.set_title('SDLL criterion: -diff(log(z))')
+        ax2.set_xlabel('k')
+        ax2.set_ylabel('Δ')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+    else:
+        ax2.set_title('Single candidate only; dif is empty')
+        ax2.axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
 def plot_detection_examples(dataset: pd.DataFrame, detected_breaks: List[List[int]],
                           n_examples: int = 6):
     """Plot examples of WBS2 detection results"""
@@ -462,7 +570,7 @@ def evaluate_detection_performance(true_breaks_list, detected_breaks_list,
 class RWBS2Detector:
     """Wrapper for R WBS2 to match Python detector interface"""
     
-    def __init__(self, universal=True, lambda_param=0.99, cusums="systematic"):
+    def __init__(self, universal=True, lambda_param=0.9, cusums="systematic"):
         self.universal = universal
         self.lambda_param = lambda_param
         self.cusums = cusums
@@ -516,7 +624,7 @@ def run_r_wbs2_benchmark():
     print("--- Running Benchmark on 500 Length Series (R Implementation) ---")
     
     # Initialize R WBS2 detector
-    detector = RWBS2Detector(universal=True, lambda_param=0.9, cusums="systematic")
+    detector = RWBS2Detector(universal=True, lambda_param=0.99, cusums="systematic")
 
     # Extract time series data
     series_columns_500 = [f't_{i}' for i in range(500)]
