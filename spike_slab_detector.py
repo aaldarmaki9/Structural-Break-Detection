@@ -462,7 +462,7 @@ def run_spike_slab_benchmark():
     print("--- Running Benchmark on 500 Length Series (Spike-and-Slab) ---")
     
     # Initialize Spike-and-Slab detector
-    detector = SpikeAndSlabDetector(q=0.2, del_threshold=40)
+    detector = SpikeAndSlabDetector(q=0.1, del_threshold=5)
 
     # Extract time series data
     series_columns_500 = [f't_{i}' for i in range(500)]

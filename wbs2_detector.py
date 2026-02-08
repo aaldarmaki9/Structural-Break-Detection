@@ -647,7 +647,7 @@ def run_r_wbs2_benchmark():
     print("--- Running Benchmark on 500 Length Series (R Implementation) ---")
     
     # Initialize R WBS2 detector
-    detector = RWBS2Detector(universal=True, lambda_param=0.99, cusums="systematic")
+    detector = RWBS2Detector(universal=True, lambda_param=0.9, cusums="systematic")
 
     # Extract time series data
     series_columns_500 = [f't_{i}' for i in range(500)]

@@ -53,11 +53,30 @@ class StructuralBreakGenerator:
         return y
 
     def _select_break_points(self, total_length: int, n_breaks: int,
-                             min_break_distance: int = 20) -> List[int]:
-        """Helper to select n_breaks with minimum distance"""
+                             min_break_distance: int = 20,
+                             enforce_min_distance: bool = True) -> List[int]:
+        """
+        Helper to select n_breaks, optionally enforcing a minimum distance between breaks.
+        If enforce_min_distance is False, breaks are sampled without spacing constraints
+        (aside from avoiding the first and last index).
+        """
         if n_breaks == 0:
             return []
-        # Ensure enough space for breaks + minimum distance + padding at ends
+
+        # Unconstrained placement: sample unique break points anywhere inside the series
+        if not enforce_min_distance or min_break_distance is None or min_break_distance <= 1:
+            max_possible_breaks = max(0, total_length - 2)  # exclude endpoints
+            if max_possible_breaks == 0:
+                return []
+            if n_breaks > max_possible_breaks:
+                print(f"Warning: Requested {n_breaks} breaks but only {max_possible_breaks} possible without spacing. Adjusting.")
+                n_breaks = max_possible_breaks
+            if n_breaks == 0:
+                return []
+            points = np.random.choice(range(1, total_length - 1), size=n_breaks, replace=False)
+            return sorted(points.tolist())
+
+        # Enforced minimum distance path (original behavior)
         required_length = n_breaks * min_break_distance + min_break_distance # n segments need n-1 distances + space for first/last segments
         if total_length < required_length:
              print(f"Warning: Total length {total_length} too short for {n_breaks} breaks with min distance {min_break_distance}. Generating fewer breaks.")
@@ -105,9 +124,10 @@ class StructuralBreakGenerator:
 
     def generate_mean_shift_series(self, total_length: int = 500,
                                  n_breaks: int = 1,
-                                 min_break_distance: int = 20) -> Tuple[np.ndarray, List[Dict]]:
+                                 min_break_distance: int = 20,
+                                 enforce_min_distance: bool = True) -> Tuple[np.ndarray, List[Dict]]:
         """Generate series with mean shifts"""
-        break_points = self._select_break_points(total_length, n_breaks, min_break_distance)
+        break_points = self._select_break_points(total_length, n_breaks, min_break_distance, enforce_min_distance)
 
         series = np.zeros(total_length)
         breaks_info = []
@@ -115,6 +135,9 @@ class StructuralBreakGenerator:
         # Generate segments
         start_idx = 0
         base_mean = np.random.normal(0, 0.5)
+        # Keep autocorrelation and variance fixed to isolate mean changes
+        base_phi = np.random.uniform(-0.3, 0.7)
+        base_sigma = np.random.uniform(0.5, 1.5)
 
         for i, bp in enumerate(break_points + [total_length]):
             segment_length = bp - start_idx
@@ -147,11 +170,7 @@ class StructuralBreakGenerator:
 
 
             # Generate AR(1) segment with new mean
-            phi = np.random.uniform(-0.3, 0.7)
-            sigma = np.random.uniform(0.5, 1.5)
-
-            # Generate AR(1) noise around 0
-            noise_segment = self.generate_ar1_segment(segment_length, phi, sigma, 0)
+            noise_segment = self.generate_ar1_segment(segment_length, base_phi, base_sigma, 0)
 
             # Shift the noise to have the desired mean
             segment = noise_segment - np.mean(noise_segment) + segment_mean # Center noise then add mean
@@ -170,9 +189,10 @@ class StructuralBreakGenerator:
 
     def generate_variance_shift_series(self, total_length: int = 500,
                                      n_breaks: int = 1,
-                                     min_break_distance: int = 20) -> Tuple[np.ndarray, List[Dict]]:
+                                     min_break_distance: int = 20,
+                                     enforce_min_distance: bool = True) -> Tuple[np.ndarray, List[Dict]]:
         """Generate series with variance/volatility shifts"""
-        break_points = self._select_break_points(total_length, n_breaks, min_break_distance)
+        break_points = self._select_break_points(total_length, n_breaks, min_break_distance, enforce_min_distance)
 
         series = np.zeros(total_length)
         breaks_info = []
@@ -180,6 +200,8 @@ class StructuralBreakGenerator:
         start_idx = 0
         base_sigma = np.random.uniform(0.8, 1.2)
         current_mean = np.random.normal(0, 0.3) # Base mean for segments
+        # Fix phi across segments to keep autocorrelation constant
+        base_phi = np.random.uniform(-0.2, 0.6)
 
         for i, bp in enumerate(break_points + [total_length]):
             segment_length = bp - start_idx
@@ -209,9 +231,8 @@ class StructuralBreakGenerator:
 
 
             # Generate segment
-            phi = np.random.uniform(-0.2, 0.6)
             # Use current_mean, don't shift mean in variance break
-            segment = self.generate_ar1_segment(segment_length, phi, segment_sigma, current_mean)
+            segment = self.generate_ar1_segment(segment_length, base_phi, segment_sigma, current_mean)
 
             # Adjust initial value to continue from previous segment's end
             if start_idx > 0 and segment_length > 0:
@@ -224,9 +245,10 @@ class StructuralBreakGenerator:
 
     def generate_autocorr_shift_series(self, total_length: int = 500,
                                      n_breaks: int = 1,
-                                     min_break_distance: int = 20) -> Tuple[np.ndarray, List[Dict]]:
+                                     min_break_distance: int = 20,
+                                     enforce_min_distance: bool = True) -> Tuple[np.ndarray, List[Dict]]:
         """Generate series with autocorrelation parameter shifts"""
-        break_points = self._select_break_points(total_length, n_breaks, min_break_distance)
+        break_points = self._select_break_points(total_length, n_breaks, min_break_distance, enforce_min_distance)
 
         series = np.zeros(total_length)
         breaks_info = []
@@ -276,9 +298,10 @@ class StructuralBreakGenerator:
 
     def generate_trend_break_series(self, total_length: int = 500,
                                   n_breaks: int = 1,
-                                  min_break_distance: int = 20) -> Tuple[np.ndarray, List[Dict]]:
+                                  min_break_distance: int = 20,
+                                  enforce_min_distance: bool = True) -> Tuple[np.ndarray, List[Dict]]:
         """Generate series with trend breaks"""
-        break_points = self._select_break_points(total_length, n_breaks, min_break_distance)
+        break_points = self._select_break_points(total_length, n_breaks, min_break_distance, enforce_min_distance)
 
         series = np.zeros(total_length)
         breaks_info = []
@@ -286,6 +309,9 @@ class StructuralBreakGenerator:
         start_idx = 0
         base_trend = np.random.uniform(-0.01, 0.01)
         cumulative_level = 0 # Start at 0
+        # Fix AR noise parameters to keep variance/autocorrelation constant
+        base_phi = np.random.uniform(0.1, 0.5)
+        base_sigma = np.random.uniform(0.5, 1.0)
 
         for i, bp in enumerate(break_points + [total_length]):
             segment_length = bp - start_idx
@@ -318,9 +344,7 @@ class StructuralBreakGenerator:
             trend_component = segment_start_level + segment_trend * t_vals
 
             # Add AR(1) noise around trend
-            phi = np.random.uniform(0.1, 0.5)
-            sigma = np.random.uniform(0.5, 1.0)
-            noise = self.generate_ar1_segment(segment_length, phi, sigma, 0) # Noise around 0 mean
+            noise = self.generate_ar1_segment(segment_length, base_phi, base_sigma, 0) # Noise around 0 mean
 
             segment = trend_component + noise
             series[start_idx:bp] = segment
@@ -332,9 +356,10 @@ class StructuralBreakGenerator:
 
     def generate_combined_break_series(self, total_length: int = 500,
                                      n_breaks: int = 1,
-                                     min_break_distance: int = 20) -> Tuple[np.ndarray, List[Dict]]:
+                                     min_break_distance: int = 20,
+                                     enforce_min_distance: bool = True) -> Tuple[np.ndarray, List[Dict]]:
         """Generate series with combined parameter breaks"""
-        break_points = self._select_break_points(total_length, n_breaks, min_break_distance)
+        break_points = self._select_break_points(total_length, n_breaks, min_break_distance, enforce_min_distance)
 
         series = np.zeros(total_length)
         breaks_info = []
@@ -417,18 +442,24 @@ class StructuralBreakGenerator:
 
     def generate_single_series(self, series_length: int = 500,
                              max_breaks: int = 3,
-                             min_break_distance: int = 20) -> Dict:
+                             min_break_distance: int = 20,
+                             enforce_min_distance: bool = True) -> Dict:
         """Generate a single time series with random break type and count"""
-        # Ensure series is long enough for breaks + minimum distance + padding at ends
-        # n breaks create n+1 segments. Minimum length is n_breaks * min_dist + 2*min_dist (for first/last segments)
-        min_required_length = max_breaks * min_break_distance + 2 * min_break_distance
-        if series_length < min_required_length:
-            # If series is too short for max_breaks, calculate the max possible breaks
-            max_possible_breaks = max(0, (series_length - 2 * min_break_distance) // min_break_distance)
-            print(f"Warning: Series length {series_length} is too short for max breaks {max_breaks} with min distance {min_break_distance}. Max possible breaks: {max_possible_breaks}")
-            n_breaks = np.random.randint(0, max_possible_breaks + 1)
+        if enforce_min_distance:
+            # Ensure series is long enough for breaks + minimum distance + padding at ends
+            # n breaks create n+1 segments. Minimum length is n_breaks * min_dist + 2*min_dist (for first/last segments)
+            min_required_length = max_breaks * min_break_distance + 2 * min_break_distance
+            if series_length < min_required_length:
+                # If series is too short for max_breaks, calculate the max possible breaks
+                max_possible_breaks = max(0, (series_length - 2 * min_break_distance) // min_break_distance)
+                print(f"Warning: Series length {series_length} is too short for max breaks {max_breaks} with min distance {min_break_distance}. Max possible breaks: {max_possible_breaks}")
+                n_breaks = np.random.randint(0, max_possible_breaks + 1)
+            else:
+                n_breaks = np.random.randint(0, max_breaks + 1)
         else:
-            n_breaks = np.random.randint(0, max_breaks + 1)
+            # Unconstrained: limited only by available interior points
+            max_possible_breaks = max(0, min(max_breaks, series_length - 2))
+            n_breaks = np.random.randint(0, max_possible_breaks + 1)
 
 
         if n_breaks == 0:
@@ -459,15 +490,15 @@ class StructuralBreakGenerator:
         break_type = np.random.choice(self.break_types)
 
         if break_type == 'mean_shift':
-            series, breaks_info = self.generate_mean_shift_series(series_length, n_breaks, min_break_distance)
+            series, breaks_info = self.generate_mean_shift_series(series_length, n_breaks, min_break_distance, enforce_min_distance)
         elif break_type == 'variance_shift':
-            series, breaks_info = self.generate_variance_shift_series(series_length, n_breaks, min_break_distance)
+            series, breaks_info = self.generate_variance_shift_series(series_length, n_breaks, min_break_distance, enforce_min_distance)
         elif break_type == 'autocorr_shift':
-            series, breaks_info = self.generate_autocorr_shift_series(series_length, n_breaks, min_break_distance)
+            series, breaks_info = self.generate_autocorr_shift_series(series_length, n_breaks, min_break_distance, enforce_min_distance)
         elif break_type == 'trend_break':
-            series, breaks_info = self.generate_trend_break_series(series_length, n_breaks, min_break_distance)
+            series, breaks_info = self.generate_trend_break_series(series_length, n_breaks, min_break_distance, enforce_min_distance)
         else:  # combined_break
-            series, breaks_info = self.generate_combined_break_series(series_length, n_breaks, min_break_distance)
+            series, breaks_info = self.generate_combined_break_series(series_length, n_breaks, min_break_distance, enforce_min_distance)
 
         # Ensure break points match the info returned
         break_points = sorted([info['break_point'] for info in breaks_info])
@@ -483,10 +514,23 @@ class StructuralBreakGenerator:
         }
 
     def generate_dataset(self, n_series: int = 100000, series_length: int = 500,
-                        max_breaks: int = 3, min_break_distance: int = 20) -> pd.DataFrame:
-        """Generate complete dataset for thesis"""
+                        max_breaks: int = 3, min_break_distance: int = 20,
+                        enforce_min_distance: bool = True,
+                        min_break_distance_pct_choices: Optional[List[float]] = None) -> pd.DataFrame:
+        """
+        Generate complete dataset for thesis.
+
+        Args:
+            n_series: number of series to generate.
+            series_length: length of each series.
+            max_breaks: maximum breaks per series.
+            min_break_distance: fixed minimum distance between breaks (used when pct choices are not provided).
+            enforce_min_distance: if False, breaks can cluster with no spacing constraint.
+            min_break_distance_pct_choices: optional list of percentages (e.g., [0.05, 0.1])
+                to sample per-series minimum distances as a fraction of series_length.
+        """
         print(f"Generating {n_series:,} synthetic time series...")
-        print(f"Series Length: {series_length}, Max Breaks: {max_breaks}, Min Break Distance: {min_break_distance}")
+        print(f"Series Length: {series_length}, Max Breaks: {max_breaks}, Min Break Distance: {min_break_distance}, Enforce Min Distance: {enforce_min_distance}")
 
 
         dataset = []
@@ -495,7 +539,14 @@ class StructuralBreakGenerator:
             if (i + 1) % 10000 == 0:
                 print(f"Generated {i + 1:,} series...")
 
-            series_data = self.generate_single_series(series_length, max_breaks, min_break_distance)
+            # Sample per-series min distance if percentage choices are provided
+            if min_break_distance_pct_choices:
+                pct_choice = np.random.choice(min_break_distance_pct_choices)
+                per_series_min_dist = max(1, int(series_length * pct_choice))
+            else:
+                per_series_min_dist = min_break_distance
+
+            series_data = self.generate_single_series(series_length, max_breaks, per_series_min_dist, enforce_min_distance)
 
             # Create row for dataset
             row = {

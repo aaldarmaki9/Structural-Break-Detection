@@ -330,8 +330,9 @@ class CleanBiLSTMDetector:
     Clean interface for BiLSTM break detection with proper domain matching
     """
 
-    def __init__(self, device: str = 'cpu'):
+    def __init__(self, device: str = 'cpu', model_save_path: str = 'clean_bilstm_model.pth'):
         self.device = device
+        self.model_save_path = model_save_path
         self.model = None
         self.sequence_length = 120  # Optimized based on sequence length experiment
         self.trained = False
@@ -585,7 +586,7 @@ class CleanBiLSTMDetector:
             if epoch_best_f1 > best_f1:
                 best_f1 = epoch_best_f1
                 patience_counter = 0
-                torch.save(self.model.state_dict(), 'clean_bilstm_model.pth')
+                torch.save(self.model.state_dict(), self.model_save_path)
             else:
                 patience_counter += 1
 
@@ -680,17 +681,18 @@ class CleanBiLSTMDetector:
         return sorted(detected_breaks)
 
 
-    def load_model(self, model_path: str):
+    def load_model(self, model_path: str = None):
         """Load a pre-trained model"""
         # Ensure the model architecture matches the saved state_dict
         self.model = BiLSTMBreakDetector(
             input_size=1, hidden_size=64, num_layers=2, output_size=1, device=self.device
         ).to(self.device)
 
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+        path_to_load = model_path or self.model_save_path
+        self.model.load_state_dict(torch.load(path_to_load, map_location=self.device))
         self.model.eval()
         self.trained = True
-        print(f"✅ Loaded model from {model_path}")
+        print(f"✅ Loaded model from {path_to_load}")
 
 if __name__ == "__main__":
     
