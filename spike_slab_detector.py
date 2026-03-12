@@ -114,9 +114,9 @@ solocp_single<-function(y,sigma,q=0.1,tau2=NULL,tau2.spike=NULL,tau2.slab=NULL){
 revcumsum <- function(x){
   return(rev(cumsum(rev(x))))
 }
-subset_changepoints <- function(ratio,del=5){
+subset_changepoints <- function(ratio,del=5,pj.threshold=0.5){
 
-  first <- which(ratio >=.5)
+  first <- which(ratio >= pj.threshold)
   if (length(first)>0){
     n.c <- length(first)
 
@@ -149,13 +149,14 @@ class SpikeAndSlabDetector:
     """Wrapper for R Spike-and-Slab changepoint detection"""
     
     def __init__(self, q=0.1, tau2=None, tau2_spike=None, tau2_slab=None, 
-                 sigma=None, del_threshold=5):
+                 sigma=None, del_threshold=5, pj_threshold=0.5):
         self.q = q
         self.tau2 = tau2
         self.tau2_spike = tau2_spike
         self.tau2_slab = tau2_slab
         self.sigma = sigma
         self.del_threshold = del_threshold
+        self.pj_threshold = pj_threshold
     
     def detect_breaks_fast(self, series):
         """
@@ -196,7 +197,7 @@ class SpikeAndSlabDetector:
             # Extract changepoints using subset_changepoints
             cpt_result = ro.r['subset_changepoints'](
                 ro.FloatVector(ratio),
-                **{'del': self.del_threshold}
+                **{'del': self.del_threshold, 'pj.threshold': float(self.pj_threshold)}
             )
             
             # Check if result is NULL (no changepoints detected)
@@ -439,368 +440,224 @@ def plot_spike_slab_examples(dataset, detected_breaks, inclusion_probs, n_exampl
     plt.tight_layout()
     plt.show()
 
-def run_spike_slab_benchmark():
-    """Run comprehensive Spike-and-Slab benchmark on loaded synthetic series"""
-    print("=== Spike-and-Slab Performance Benchmark ===")
-    print()
+def _group_performance(true_breaks_list, detected_breaks_list, group_labels, series_length, tolerance_percentage=1.0):
+    """Aggregate TP/FP/FN and localization errors by group label."""
+    tolerance = max(1, int(series_length * (tolerance_percentage / 100.0)))
+    grouped = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0, 'localization_errors': []})
 
-    # Load synthetic data
-    dataset_500 = pd.read_pickle('synthetic_breaks_100_500_min50.pkl')
-    dataset_1000 = pd.read_pickle('synthetic_breaks_100_1000_min100.pkl')
-
-    print(f"Dataset (500 length) loaded:")
-    print(f"- Total series: {len(dataset_500):,}")
-    print(f"- Break distribution: {dataset_500['n_breaks'].value_counts().sort_index().to_dict()}")
-    print()
-
-    print(f"Dataset (1000 length) loaded:")
-    print(f"- Total series: {len(dataset_1000):,}")
-    print(f"- Break distribution: {dataset_1000['n_breaks'].value_counts().sort_index().to_dict()}")
-    print()
-
-    # --- Benchmark on 500 length series ---
-    print("--- Running Benchmark on 500 Length Series (Spike-and-Slab) ---")
-    
-    # Initialize Spike-and-Slab detector
-    detector = SpikeAndSlabDetector(q=0.1, del_threshold=5)
-
-    # Extract time series data
-    series_columns_500 = [f't_{i}' for i in range(500)]
-    time_series_data_500 = dataset_500[series_columns_500].values
-    true_breaks_500 = dataset_500['break_points'].tolist()
-    series_length_500 = len(series_columns_500)
-
-    print("Running Spike-and-Slab detection on 500 length series...")
-    start_time_500 = time.time()
-
-    detected_breaks_500 = []
-    detection_times_500 = []
-
-    try:
-        for i, series in enumerate(time_series_data_500):
-            if (i + 1) % 20 == 0:
-                print(f"Processed {i + 1:,} series...")
-
-            series_start_time = time.time()
-            breaks = detector.detect_breaks_fast(series)
-            series_end_time = time.time()
-
-            detected_breaks_500.append(breaks)
-            detection_times_500.append(series_end_time - series_start_time)
-
-    except KeyboardInterrupt:
-        print("\nBenchmark on 500 series interrupted by user.")
-        pass
-
-    total_time_500 = time.time() - start_time_500
-
-    print(f"Detection completed for 500 series in {total_time_500:.2f} seconds")
-    if detection_times_500:
-        print(f"Average time per 500 series (processed): {np.mean(detection_times_500)*1000:.2f} ms")
-    print()
-
-    # Evaluate performance for 500 series with 1% tolerance
-    print("Evaluating performance for 500 series with 1% tolerance...")
-    results_500 = evaluate_detection_performance(
-        true_breaks_500[:len(detected_breaks_500)], 
-        detected_breaks_500, 
-        series_length_500, 
-        tolerance_percentage=1.0
-    )
-
-    print("=== Spike-and-Slab Performance Results (500 Series, 1% Tolerance) ===")
-    print(f"Tolerance used: {results_500['tolerance_used']}")
-    print(f"Overall Precision: {results_500['precision']:.3f}")
-    print(f"Overall Recall: {results_500['recall']:.3f}")
-    print(f"Overall F1-Score: {results_500['f1_score']:.3f}")
-    print()
-    print(f"Average Precision: {results_500['avg_precision']:.3f}")
-    print(f"Average Recall: {results_500['avg_recall']:.3f}")
-    print(f"Average F1-Score: {results_500['avg_f1']:.3f}")
-    print()
-    print(f"Average Localization Error: {results_500['avg_localization_error']:.1f} time points")
-    print()
-    print(f"Confusion Matrix:")
-    print(f"True Positives: {results_500['true_positives']}")
-    print(f"False Positives: {results_500['false_positives']}")
-    print(f"False Negatives: {results_500['false_negatives']}")
-
-    # Performance by number of breaks for 500 series
-    print("\n=== Performance by Break Count (500 Series, 1% Tolerance) ===")
-    break_count_results_500 = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0, 'localization_errors': []})
-
-    for i in range(len(detected_breaks_500)):
-        true_bp = true_breaks_500[i]
-        detected_bp = detected_breaks_500[i]
-        n_true_breaks = len(true_bp)
-
-        break_count_results_500[n_true_breaks]['count'] += 1
-
+    for true_bp, detected_bp, label in zip(true_breaks_list, detected_breaks_list, group_labels):
+        grouped[label]['count'] += 1
         tp = 0
-        matched_true_indices = set()
-        matched_detected_indices = set()
-        current_localization_errors = []
+        matched_true = set()
+        current_loc_errors = []
 
-        current_tolerance = max(1, int(series_length_500 * (1.0 / 100.0)))
-
-        for j, det_bp in enumerate(detected_bp):
+        for det_bp in detected_bp:
             for k, true_bp_k in enumerate(true_bp):
-                if abs(det_bp - true_bp_k) <= current_tolerance:
-                    if k not in matched_true_indices:
-                        matched_true_indices.add(k)
-                        matched_detected_indices.add(j)
-                        tp += 1
-                        current_localization_errors.append(abs(det_bp - true_bp_k))
-                        break
-
-        fp = len(detected_bp) - tp
-        fn = n_true_breaks - tp
-
-        break_count_results_500[n_true_breaks]['tp'] += tp
-        break_count_results_500[n_true_breaks]['fp'] += fp
-        break_count_results_500[n_true_breaks]['fn'] += fn
-        break_count_results_500[n_true_breaks]['localization_errors'].extend(current_localization_errors)
-
-    for n_breaks in sorted(break_count_results_500.keys()):
-        stats = break_count_results_500[n_breaks]
-        precision = stats['tp'] / (stats['tp'] + stats['fp']) if (stats['tp'] + stats['fp']) > 0 else 0
-        recall = stats['tp'] / (stats['tp'] + stats['fn']) if (stats['tp'] + stats['fn']) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        avg_loc_error = np.mean(stats['localization_errors']) if stats['localization_errors'] else 0
-
-        print(f"{n_breaks} breaks ({stats['count']} series): P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, LocErr={avg_loc_error:.1f}")
-
-    # Performance by break type for 500 series
-    print("\n=== Performance by Break Type (500 Series, 1% Tolerance) ===")
-    results_by_type_500 = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0, 'localization_errors': []})
-
-    for i in range(len(detected_breaks_500)):
-        true_bp = true_breaks_500[i]
-        detected_bp = detected_breaks_500[i]
-        primary_break_type = dataset_500.iloc[i]['primary_break_type']
-
-        results_by_type_500[primary_break_type]['count'] += 1
-
-        tp = 0
-        matched_true_indices = set()
-        current_localization_errors = []
-
-        current_tolerance = max(1, int(series_length_500 * (1.0 / 100.0)))
-
-        for j, det_bp in enumerate(detected_bp):
-            for k, true_bp_k in enumerate(true_bp):
-                if abs(det_bp - true_bp_k) <= current_tolerance:
-                    if k not in matched_true_indices:
-                        matched_true_indices.add(k)
-                        tp += 1
-                        current_localization_errors.append(abs(det_bp - true_bp_k))
-                        break
+                if abs(det_bp - true_bp_k) <= tolerance and k not in matched_true:
+                    matched_true.add(k)
+                    tp += 1
+                    current_loc_errors.append(abs(det_bp - true_bp_k))
+                    break
 
         fp = len(detected_bp) - tp
         fn = len(true_bp) - tp
+        grouped[label]['tp'] += tp
+        grouped[label]['fp'] += fp
+        grouped[label]['fn'] += fn
+        grouped[label]['localization_errors'].extend(current_loc_errors)
 
-        results_by_type_500[primary_break_type]['tp'] += tp
-        results_by_type_500[primary_break_type]['fp'] += fp
-        results_by_type_500[primary_break_type]['fn'] += fn
-        results_by_type_500[primary_break_type]['localization_errors'].extend(current_localization_errors)
+    return grouped
 
-    for break_type in sorted(results_by_type_500.keys()):
-        stats = results_by_type_500[break_type]
+
+def _print_overall_metrics(results, label: str, tolerance_pct: float):
+    print(f"=== Spike-and-Slab Performance Results ({label}, {tolerance_pct}% Tolerance) ===")
+    print(f"Tolerance used: {results['tolerance_used']}")
+    print(f"Overall Precision: {results['precision']:.3f}")
+    print(f"Overall Recall: {results['recall']:.3f}")
+    print(f"Overall F1-Score: {results['f1_score']:.3f}\n")
+    print(f"Average Precision: {results['avg_precision']:.3f}")
+    print(f"Average Recall: {results['avg_recall']:.3f}")
+    print(f"Average F1-Score: {results['avg_f1']:.3f}\n")
+    print(f"Average Localization Error: {results['avg_localization_error']:.1f} time points\n")
+    print("Confusion Matrix:")
+    print(f"True Positives: {results['true_positives']}")
+    print(f"False Positives: {results['false_positives']}")
+    print(f"False Negatives: {results['false_negatives']}")
+
+
+def _print_group_metrics(grouped_stats, label: str, tolerance_pct: float, formatter=lambda v: str(v)):
+    print(f"\n=== Performance by {label} ({tolerance_pct}% Tolerance) ===")
+    for group_key in sorted(grouped_stats.keys()):
+        stats = grouped_stats[group_key]
         total_detected = stats['tp'] + stats['fp']
         total_true = stats['tp'] + stats['fn']
-
-        precision = stats['tp'] / total_detected if total_detected > 0 else 0
-        recall = stats['tp'] / total_true if total_true > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        precision = stats['tp'] / total_detected if total_detected else 0
+        recall = stats['tp'] / total_true if total_true else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
         avg_loc_error = np.mean(stats['localization_errors']) if stats['localization_errors'] else 0
-        print(f"{break_type.replace('_', ' ').title()} ({stats['count']} series): P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, LocErr={avg_loc_error:.1f}")
-    # Before plotting, get inclusion probabilities for all series
+        print(
+            f"{formatter(group_key)} ({stats['count']} series): "
+            f"P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, LocErr={avg_loc_error:.1f}"
+        )
+
+
+def run_spike_slab_benchmark_for(path: str, series_length: int, label: str,
+                                 q: float = 0.1, del_threshold: int = 5,
+                                 pj_threshold: float = 0.5, tolerance_pct: float = 1.0,
+                                 n_examples: int = 6):
+    """Run Spike-and-Slab benchmark for a single dataset path and series length."""
+    df = pd.read_pickle(path)
+    print(f"\n=== Spike-and-Slab Benchmark ({label}) ===")
+    print(f"Total series: {len(df):,}")
+    print(f"Break distribution: {df['n_breaks'].value_counts().sort_index().to_dict()}")
+    print()
+
+    detector = SpikeAndSlabDetector(q=q, del_threshold=del_threshold, pj_threshold=pj_threshold)
+    series_cols = [f"t_{i}" for i in range(series_length)]
+    ts = df[series_cols].values
+    true_breaks = df['break_points'].tolist()
+
+    detected = []
+    times = []
+    print(f"Running Spike-and-Slab detection on {series_length}-length series...")
+    start = time.time()
+    for i, series in enumerate(ts):
+        if (i + 1) % 20 == 0:
+            print(f"Processed {i + 1:,} series...")
+        t0 = time.time()
+        det = detector.detect_breaks_fast(series)
+        t1 = time.time()
+        detected.append(det)
+        times.append(t1 - t0)
+    total = time.time() - start
+    print(f"Detection completed in {total:.2f} seconds")
+    if times:
+        print(f"Average time per series: {np.mean(times)*1000:.2f} ms")
+    print()
+
+    results = evaluate_detection_performance(
+        true_breaks[:len(detected)],
+        detected,
+        series_length,
+        tolerance_percentage=tolerance_pct,
+    )
+    _print_overall_metrics(results, label, tolerance_pct)
+
+    # No-break diagnostics (comparable across detectors)
+    true_eval = true_breaks[:len(detected)]
+    no_break_indices = [i for i, tb in enumerate(true_eval) if len(tb) == 0]
+    n_no_break_series = len(no_break_indices)
+    if n_no_break_series > 0:
+        no_break_zero_detect = sum(1 for i in no_break_indices if len(detected[i]) == 0)
+        no_break_any_detect = n_no_break_series - no_break_zero_detect
+        no_break_spurious_counts = [len(detected[i]) for i in no_break_indices]
+        no_break_tnr = no_break_zero_detect / n_no_break_series
+        no_break_far = no_break_any_detect / n_no_break_series
+        no_break_mean_spurious = float(np.mean(no_break_spurious_counts))
+    else:
+        no_break_zero_detect = 0
+        no_break_any_detect = 0
+        no_break_tnr = np.nan
+        no_break_far = np.nan
+        no_break_mean_spurious = np.nan
+
+    print("\n=== No-Break Diagnostics ===")
+    print(f"No-break series: {n_no_break_series}")
+    if n_no_break_series > 0:
+        print(f"TNR_0 (zero detections on no-break): {no_break_tnr:.3f}")
+        print(f"FAR_0 (>=1 false alarm on no-break): {no_break_far:.3f}")
+        print(f"Mean spurious breaks on no-break: {no_break_mean_spurious:.3f}")
+    else:
+        print("No no-break series available in evaluated set.")
+
+    by_break_count = _group_performance(
+        true_breaks[:len(detected)],
+        detected,
+        [len(tb) for tb in true_breaks[:len(detected)]],
+        series_length,
+        tolerance_percentage=tolerance_pct,
+    )
+    _print_group_metrics(by_break_count, "Break Count", tolerance_pct, formatter=lambda v: f"{v} breaks")
+
+    by_break_type = _group_performance(
+        true_breaks[:len(detected)],
+        detected,
+        df['primary_break_type'].iloc[:len(detected)].tolist(),
+        series_length,
+        tolerance_percentage=tolerance_pct,
+    )
+    _print_group_metrics(by_break_type, "Break Type", tolerance_pct, formatter=lambda v: v.replace('_', ' ').title())
+
     print("\nComputing inclusion probabilities for visualization...")
-    inclusion_probs_500 = []
-    for series in time_series_data_500[:len(detected_breaks_500)]:
+    inclusion_probs = []
+    for series in ts[:len(detected)]:
         probs = detector.get_inclusion_probabilities(series)
-        inclusion_probs_500.append(probs['ratio'])
-    
-    # Plot examples for 500 series with probabilities
-    if detected_breaks_500:
+        inclusion_probs.append(probs['ratio'])
+
+    if detected:
         plot_spike_slab_examples(
-            dataset_500.iloc[:len(detected_breaks_500)], 
-            detected_breaks_500, 
-            inclusion_probs_500,
-            n_examples=min(6, len(detected_breaks_500))
+            df.iloc[:len(detected)],
+            detected,
+            inclusion_probs,
+            n_examples=min(n_examples, len(detected))
         )
 
-    # --- Benchmark on 1000 length series ---
-    print("\n\n--- Running Benchmark on 1000 Length Series (Spike-and-Slab) ---")
-    
-    # Extract time series data
-    series_columns_1000 = [f't_{i}' for i in range(1000)]
-    time_series_data_1000 = dataset_1000[series_columns_1000].values
-    true_breaks_1000 = dataset_1000['break_points'].tolist()
-    series_length_1000 = len(series_columns_1000)
+    return {
+        'dataset': df,
+        'detected_breaks': detected,
+        'overall_results': results,
+        'results_by_break_count': by_break_count,
+        'results_by_type': by_break_type,
+        'detection_times': times,
+        'no_break_metrics': {
+            'n_no_break_series': n_no_break_series,
+            'no_break_zero_detect': no_break_zero_detect,
+            'no_break_any_detect': no_break_any_detect,
+            'tnr_0': no_break_tnr,
+            'far_0': no_break_far,
+            'mean_spurious_breaks_no_break': no_break_mean_spurious,
+        },
+    }
 
-    print("Running Spike-and-Slab detection on 1000 length series...")
-    start_time_1000 = time.time()
 
-    detected_breaks_1000 = []
-    detection_times_1000 = []
+def run_spike_slab_benchmark():
+    """Run comprehensive Spike-and-Slab benchmark on constrained 500/1000 datasets."""
+    print("=== Spike-and-Slab Performance Benchmark ===\n")
 
-    try:
-        for i, series in enumerate(time_series_data_1000):
-            if (i + 1) % 20 == 0:
-                print(f"Processed {i + 1:,} series...")
-
-            series_start_time = time.time()
-            breaks = detector.detect_breaks_fast(series)
-            series_end_time = time.time()
-
-            detected_breaks_1000.append(breaks)
-            detection_times_1000.append(series_end_time - series_start_time)
-
-    except KeyboardInterrupt:
-        print("\nBenchmark on 1000 series interrupted by user.")
-        pass
-
-    total_time_1000 = time.time() - start_time_1000
-
-    print(f"Detection completed for 1000 series in {total_time_1000:.2f} seconds")
-    if detection_times_1000:
-        print(f"Average time per 1000 series (processed): {np.mean(detection_times_1000)*1000:.2f} ms")
-    print()
-
-    # Evaluate performance for 1000 series with 1% tolerance
-    print("Evaluating performance for 1000 series with 1% tolerance...")
-    results_1000 = evaluate_detection_performance(
-        true_breaks_1000[:len(detected_breaks_1000)], 
-        detected_breaks_1000, 
-        series_length_1000, 
-        tolerance_percentage=1.0
+    res_500 = run_spike_slab_benchmark_for(
+        path='synthetic_breaks_100_500_min50.pkl',
+        series_length=500,
+        label='500 constrained',
+        q=0.1,
+        del_threshold=5,
+        pj_threshold=0.5,
+        tolerance_pct=1.0,
+        n_examples=6,
+    )
+    print("\n")
+    res_1000 = run_spike_slab_benchmark_for(
+        path='synthetic_breaks_100_1000_min100.pkl',
+        series_length=1000,
+        label='1000 constrained',
+        q=0.1,
+        del_threshold=5,
+        pj_threshold=0.5,
+        tolerance_pct=1.0,
+        n_examples=6,
     )
 
-    print("=== Spike-and-Slab Performance Results (1000 Series, 1% Tolerance) ===")
-    print(f"Tolerance used: {results_1000['tolerance_used']}")
-    print(f"Overall Precision: {results_1000['precision']:.3f}")
-    print(f"Overall Recall: {results_1000['recall']:.3f}")
-    print(f"Overall F1-Score: {results_1000['f1_score']:.3f}")
-    print()
-    print(f"Average Precision: {results_1000['avg_precision']:.3f}")
-    print(f"Average Recall: {results_1000['avg_recall']:.3f}")
-    print(f"Average F1-Score: {results_1000['avg_f1']:.3f}")
-    print()
-    print(f"Average Localization Error: {results_1000['avg_localization_error']:.1f} time points")
-    print()
-    print(f"Confusion Matrix:")
-    print(f"True Positives: {results_1000['true_positives']}")
-    print(f"False Positives: {results_1000['false_positives']}")
-    print(f"False Negatives: {results_1000['false_negatives']}")
-
-    # Performance by number of breaks for 1000 series
-    print("\n=== Performance by Break Count (1000 Series, 1% Tolerance) ===")
-    break_count_results_1000 = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0, 'localization_errors': []})
-
-    for i in range(len(detected_breaks_1000)):
-        true_bp = true_breaks_1000[i]
-        detected_bp = detected_breaks_1000[i]
-        n_true_breaks = len(true_bp)
-
-        break_count_results_1000[n_true_breaks]['count'] += 1
-
-        tp = 0
-        matched_true_indices = set()
-        matched_detected_indices = set()
-        current_localization_errors = []
-
-        current_tolerance = max(1, int(series_length_1000 * (1.0 / 100.0)))
-
-        for j, det_bp in enumerate(detected_bp):
-            for k, true_bp_k in enumerate(true_bp):
-                if abs(det_bp - true_bp_k) <= current_tolerance:
-                    if k not in matched_true_indices:
-                        matched_true_indices.add(k)
-                        matched_detected_indices.add(j)
-                        tp += 1
-                        current_localization_errors.append(abs(det_bp - true_bp_k))
-                        break
-
-        fp = len(detected_bp) - tp
-        fn = n_true_breaks - tp
-
-        break_count_results_1000[n_true_breaks]['tp'] += tp
-        break_count_results_1000[n_true_breaks]['fp'] += fp
-        break_count_results_1000[n_true_breaks]['fn'] += fn
-        break_count_results_1000[n_true_breaks]['localization_errors'].extend(current_localization_errors)
-
-    for n_breaks in sorted(break_count_results_1000.keys()):
-        stats = break_count_results_1000[n_breaks]
-        precision = stats['tp'] / (stats['tp'] + stats['fp']) if (stats['tp'] + stats['fp']) > 0 else 0
-        recall = stats['tp'] / (stats['tp'] + stats['fn']) if (stats['tp'] + stats['fn']) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        avg_loc_error = np.mean(stats['localization_errors']) if stats['localization_errors'] else 0
-
-        print(f"{n_breaks} breaks ({stats['count']} series): P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, LocErr={avg_loc_error:.1f}")
-
-    # Performance by break type for 1000 series
-    print("\n=== Performance by Break Type (1000 Series, 1% Tolerance) ===")
-    results_by_type_1000 = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'count': 0, 'localization_errors': []})
-
-    for i in range(len(detected_breaks_1000)):
-        true_bp = true_breaks_1000[i]
-        detected_bp = detected_breaks_1000[i]
-        primary_break_type = dataset_1000.iloc[i]['primary_break_type']
-
-        results_by_type_1000[primary_break_type]['count'] += 1
-
-        tp = 0
-        matched_true_indices = set()
-        current_localization_errors = []
-
-        current_tolerance = max(1, int(series_length_1000 * (1.0 / 100.0)))
-
-        for j, det_bp in enumerate(detected_bp):
-            for k, true_bp_k in enumerate(true_bp):
-                if abs(det_bp - true_bp_k) <= current_tolerance:
-                    if k not in matched_true_indices:
-                        matched_true_indices.add(k)
-                        tp += 1
-                        current_localization_errors.append(abs(det_bp - true_bp_k))
-                        break
-
-        fp = len(detected_bp) - tp
-        fn = len(true_bp) - tp
-
-        results_by_type_1000[primary_break_type]['tp'] += tp
-        results_by_type_1000[primary_break_type]['fp'] += fp
-        results_by_type_1000[primary_break_type]['fn'] += fn
-        results_by_type_1000[primary_break_type]['localization_errors'].extend(current_localization_errors)
-
-    for break_type in sorted(results_by_type_1000.keys()):
-        stats = results_by_type_1000[break_type]
-        total_detected = stats['tp'] + stats['fp']
-        total_true = stats['tp'] + stats['fn']
-
-        precision = stats['tp'] / total_detected if total_detected > 0 else 0
-        recall = stats['tp'] / total_true if total_true > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        avg_loc_error = np.mean(stats['localization_errors']) if stats['localization_errors'] else 0
-        print(f"{break_type.replace('_', ' ').title()} ({stats['count']} series): P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, LocErr={avg_loc_error:.1f}")
-    # Before plotting 1000 series
-    print("\nComputing inclusion probabilities for 1000 series visualization...")
-    inclusion_probs_1000 = []
-    for series in time_series_data_1000[:len(detected_breaks_1000)]:
-        probs = detector.get_inclusion_probabilities(series)
-        inclusion_probs_1000.append(probs['ratio'])
-    
-    # Plot examples for 1000 series
-    if detected_breaks_1000:
-        plot_spike_slab_examples(
-            dataset_1000.iloc[:len(detected_breaks_1000)], 
-            detected_breaks_1000, 
-            inclusion_probs_1000,
-            n_examples=min(6, len(detected_breaks_1000))
-        )
-    
-    return dataset_500, detected_breaks_500, results_500, results_by_type_500, detection_times_500, \
-           dataset_1000, detected_breaks_1000, results_1000, results_by_type_1000, detection_times_1000
+    return (
+        res_500['dataset'],
+        res_500['detected_breaks'],
+        res_500['overall_results'],
+        res_500['results_by_type'],
+        res_500['detection_times'],
+        res_1000['dataset'],
+        res_1000['detected_breaks'],
+        res_1000['overall_results'],
+        res_1000['results_by_type'],
+        res_1000['detection_times'],
+    )
 
 
 # Run the benchmark only when script is executed directly

@@ -40,7 +40,7 @@ At minimum you’ll need:
 - `rpy2` (to call the R implementations)
 
 ```bash
-pip install numpy pandas matplotlib scipy torch yfinance rpy2
+pip install numpy pandas matplotlib scipy torch yfinance rpy2 ipykernel
 ```
 
 ### 3) R requirements (for WBS2 + Spike-and-Slab)

@@ -694,6 +694,236 @@ class CleanBiLSTMDetector:
         self.trained = True
         print(f"✅ Loaded model from {path_to_load}")
 
+# BiLSTM benchmark (reusable; synthetic + real)
+
+def run_bilstm_benchmark_for(
+    dataset: pd.DataFrame,
+    dataset_label: str,
+    bilstm_detector,
+    threshold: float = 0.6,
+    stride: int = 15,
+    tolerance_percentage: float = 1.0,
+    evaluate_by_type_fn=None,
+    evaluate_by_count_fn=None,
+):
+    """
+    Run BiLSTM detection + evaluation on one dataset.
+
+    Returns:
+        dict with overall metrics, grouped metrics, timing, and predictions.
+    """
+    print(f"\n=== BiLSTM Benchmark ({dataset_label}) ===")
+    print(f"Using threshold={threshold}, stride={stride}")
+
+    series_columns = [c for c in dataset.columns if c.startswith("t_")]
+    series_length = len(series_columns)
+    if series_length == 0:
+        print(f"Error: No 't_' columns found in {dataset_label}.")
+        return {}
+
+    X = dataset[series_columns].values.astype(float)
+    true_breaks_list = dataset["break_points"].tolist()
+
+    # -----------------
+    # Detection
+    # -----------------
+    detected_breaks_list = []
+    runtimes_ms = []
+
+    print(f"Running BiLSTM detection on {len(dataset)} series (length={series_length})...")
+    t_start = time.time()
+    try:
+        for i, y in enumerate(X):
+            if (i + 1) % 20 == 0:
+                print(f"Processed {i + 1:,}/{len(dataset):,} series...")
+
+            t0 = time.time()
+            detected = bilstm_detector.detect_breaks(
+                y,
+                threshold=threshold,
+                stride=stride,
+            )
+            t1 = time.time()
+
+            detected_breaks_list.append(detected)
+            runtimes_ms.append((t1 - t0) * 1000.0)
+
+    except KeyboardInterrupt:
+        print(f"\nBenchmark on {dataset_label} interrupted by user.")
+
+    total_time_s = time.time() - t_start
+    print(f"Detection completed in {total_time_s:.2f} seconds")
+    if runtimes_ms:
+        print(f"Average time per series: {np.mean(runtimes_ms):.2f} ms")
+
+    # -----------------
+    # Overall evaluation
+    # -----------------
+    tolerance = max(1, int(series_length * (tolerance_percentage / 100.0)))
+    print(f"\nUsing tolerance={tolerance} ({tolerance_percentage}% of length {series_length})")
+
+    total_tp, total_fp, total_fn = 0, 0, 0
+    all_localization_errors = []
+    per_series_precision = []
+    per_series_recall = []
+    per_series_f1 = []
+
+    for i in range(len(detected_breaks_list)):
+        true_breaks = true_breaks_list[i]
+        detected_breaks = detected_breaks_list[i]
+
+        tp = 0
+        matched_true_indices = set()
+        current_loc_errors = []
+
+        for det_bp in detected_breaks:
+            for k, true_bp in enumerate(true_breaks):
+                if abs(det_bp - true_bp) <= tolerance and k not in matched_true_indices:
+                    matched_true_indices.add(k)
+                    tp += 1
+                    current_loc_errors.append(abs(det_bp - true_bp))
+                    break
+
+        fp = len(detected_breaks) - tp
+        fn = len(true_breaks) - tp
+        if len(detected_breaks) > 0:
+            p_i = tp / len(detected_breaks)
+            per_series_precision.append(p_i)
+
+        if len(true_breaks) > 0:
+            r_i = tp / len(true_breaks)
+            per_series_recall.append(r_i)
+
+            if len(detected_breaks) > 0:
+                f1_i = 2 * p_i * r_i / (p_i + r_i) if (p_i + r_i) > 0 else 0.0
+                per_series_f1.append(f1_i)
+
+
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+        all_localization_errors.extend(current_loc_errors)
+
+    overall_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+    overall_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
+    overall_f1 = (
+        2 * overall_precision * overall_recall / (overall_precision + overall_recall)
+        if (overall_precision + overall_recall) > 0 else 0.0
+    )
+    overall_avg_loc_err = float(np.mean(all_localization_errors)) if all_localization_errors else 0.0
+    avg_precision = float(np.mean(per_series_precision)) if per_series_precision else 0.0
+    avg_recall = float(np.mean(per_series_recall)) if per_series_recall else 0.0
+    avg_f1 = float(np.mean(per_series_f1)) if per_series_f1 else 0.0
+
+    print(f"\n=== Overall Performance ({dataset_label}) ===")
+    print(f"Overall Precision: {overall_precision:.3f}")
+    print(f"Overall Recall: {overall_recall:.3f}")
+    print(f"Overall F1-Score: {overall_f1:.3f}")
+    print(f"Overall Avg Localization Error: {overall_avg_loc_err:.1f}")
+    print(f"Average Precision: {avg_precision:.3f}")
+    print(f"Average Recall: {avg_recall:.3f}")
+    print(f"Average F1-Score: {avg_f1:.3f}")
+    print("\nConfusion Matrix:")
+    print(f"True Positives: {total_tp}")
+    print(f"False Positives: {total_fp}")
+    print(f"False Negatives: {total_fn}")
+
+    # No-break diagnostics (comparable across detectors)
+    true_eval = true_breaks_list[:len(detected_breaks_list)]
+    no_break_indices = [i for i, tb in enumerate(true_eval) if len(tb) == 0]
+    n_no_break_series = len(no_break_indices)
+    if n_no_break_series > 0:
+        no_break_zero_detect = sum(1 for i in no_break_indices if len(detected_breaks_list[i]) == 0)
+        no_break_any_detect = n_no_break_series - no_break_zero_detect
+        no_break_spurious_counts = [len(detected_breaks_list[i]) for i in no_break_indices]
+        no_break_tnr = no_break_zero_detect / n_no_break_series
+        no_break_far = no_break_any_detect / n_no_break_series
+        no_break_mean_spurious = float(np.mean(no_break_spurious_counts))
+    else:
+        no_break_zero_detect = 0
+        no_break_any_detect = 0
+        no_break_tnr = np.nan
+        no_break_far = np.nan
+        no_break_mean_spurious = np.nan
+
+    print("\n=== No-Break Diagnostics ===")
+    print(f"No-break series: {n_no_break_series}")
+    if n_no_break_series > 0:
+        print(f"TNR_0 (zero detections on no-break): {no_break_tnr:.3f}")
+        print(f"FAR_0 (>=1 false alarm on no-break): {no_break_far:.3f}")
+        print(f"Mean spurious breaks on no-break: {no_break_mean_spurious:.3f}")
+    else:
+        print("No no-break series available in evaluated set.")
+
+    # -----------------
+    # Grouped evaluation (optional helpers)
+    # -----------------
+    results_by_type = {}
+    if callable(evaluate_by_type_fn):
+        try:
+            results_by_type = evaluate_by_type_fn(dataset, detected_breaks_list)
+            print(f"\n=== Performance by Break Type ({dataset_label}) ===")
+            for break_type, stats in results_by_type.items():
+                print(
+                    f"{break_type.replace('_',' ').title()} ({stats['n_series']} series): "
+                    f"P={stats['precision']:.3f}  R={stats['recall']:.3f}  "
+                    f"F1={stats['f1_score']:.3f}  LocErr={stats['avg_localization_error']:.1f}"
+                )
+        except Exception as e:
+            print(f"Type evaluation failed: {e}")
+
+    results_by_count = {}
+    if callable(evaluate_by_count_fn):
+        try:
+            results_by_count = evaluate_by_count_fn(dataset, detected_breaks_list)
+            print(f"\n=== Performance by Break Count ({dataset_label}) ===")
+            for k in sorted(results_by_count.keys()):
+                s = results_by_count[k]
+                print(
+                    f"{k} breaks ({s['count']} series): "
+                    f"P={s['precision']:.3f}  R={s['recall']:.3f}  "
+                    f"F1={s['f1_score']:.3f}  LocErr={s.get('avg_localization_error', 0.0):.1f}"
+                )
+        except Exception as e:
+            print(f"Count evaluation failed: {e}")
+
+    return {
+        "dataset_label": dataset_label,
+        "detected_breaks": detected_breaks_list,
+        "runtimes_ms": runtimes_ms,
+        "overall_precision": overall_precision,
+        "overall_recall": overall_recall,
+        "overall_f1": overall_f1,
+        "overall_avg_loc_err": overall_avg_loc_err,
+        "avg_precision": avg_precision,
+        "avg_recall": avg_recall,
+        "avg_f1": avg_f1,
+        "true_positives": total_tp,
+        "false_positives": total_fp,
+        "false_negatives": total_fn,
+        "results_by_type": results_by_type,
+        "results_by_count": results_by_count,
+        "mean_runtime_ms": np.mean(runtimes_ms) if runtimes_ms else 0.0,
+        "median_runtime_ms": np.median(runtimes_ms) if runtimes_ms else 0.0,
+        "total_time_s": total_time_s,
+        "n_series": len(dataset),
+        "series_length": series_length,
+        "detection_threshold": threshold,
+        "detection_stride": stride,
+        "tolerance": tolerance,
+        "no_break_metrics": {
+            "n_no_break_series": n_no_break_series,
+            "no_break_zero_detect": no_break_zero_detect,
+            "no_break_any_detect": no_break_any_detect,
+            "tnr_0": no_break_tnr,
+            "far_0": no_break_far,
+            "mean_spurious_breaks_no_break": no_break_mean_spurious,
+        },
+
+    }
+
+
+
 if __name__ == "__main__":
     
     # Generate test data 
